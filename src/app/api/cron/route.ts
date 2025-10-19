@@ -1,7 +1,7 @@
 // app/api/post/route.ts
 import { NextResponse } from "next/server";
 
-export async function POST() {
+export async function GET() {
   const THREADS_USER_ID = process.env.THREADS_USER_ID!;
   const ACCESS_TOKEN = process.env.THREADS_ACCESS_TOKEN!;
 
