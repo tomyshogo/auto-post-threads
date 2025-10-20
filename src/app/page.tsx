@@ -1,5 +1,4 @@
 "use client"; // ボタンで fetch するので client component にする
-import Image from "next/image";
 import { useState } from "react";
 
 export default function Home() {
@@ -13,9 +12,14 @@ export default function Home() {
       const res = await fetch("/api/cron");
       const data = await res.json();
       setResult(JSON.stringify(data));
-    } catch (err: any) {
-      setResult(err.message);
-    } finally {
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setResult(err.message);
+      } else {
+        setResult(String(err));
+      }
+    }
+    finally {
       setLoading(false);
     }
   };
