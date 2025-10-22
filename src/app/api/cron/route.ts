@@ -19,7 +19,10 @@ export async function GET() {
     });
     const sheets = google.sheets({ version: "v4", auth });
 
-    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date();
+    const jstToday = new Date(now.getTime() + 9 * 60 * 60 * 1000); // JST
+    const today = jstToday.toISOString().slice(0, 10);
+
 
     // シートから全データ取得
     const sheetData = await sheets.spreadsheets.values.get({
