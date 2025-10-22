@@ -9,7 +9,6 @@ export async function GET() {
   const s3Bucket = process.env.S3_BUCKET_NAME!;
   const s3Region = process.env.AWS_REGION!;
 
-  // JSON文字列をパースしてサービスアカウントキーに変換
   const serviceAccountKey = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY!);
 
   try {
@@ -20,7 +19,6 @@ export async function GET() {
     });
     const sheets = google.sheets({ version: "v4", auth });
 
-    // 今日の日付
     const today = new Date().toISOString().slice(0, 10);
 
     // シートから全データ取得
@@ -34,7 +32,6 @@ export async function GET() {
       return NextResponse.json({ success: false, error: "シートにデータがありません" });
     }
 
-    // 今日の日付の行を検索
     const todayRow = rows.find((row) => row[0] === today);
     if (!todayRow || !todayRow[1]) {
       return NextResponse.json({ success: false, error: "今日の日付のテキストが見つかりません" });
@@ -48,17 +45,19 @@ export async function GET() {
       region: s3Region,
     });
 
-    // 署名付き URL 取得
-    let imageUrl: string | null = null;
-    try {
-      imageUrl = await s3.getSignedUrlPromise("getObject", {
-        Bucket: s3Bucket,
-        Key: `${today}.jpg`,
-        Expires: 60 * 60,
-      });
-    } catch (err) {
-      console.warn("S3画像が見つかりません:", err);
-    }
+    // 今日の日付に対応する画像をすべて取得
+    const listRes = await s3.listObjectsV2({
+      Bucket: s3Bucket,
+      Prefix: `${today}_`, // 例: 2025-10-22_1.jpg, 2025-10-22_2.jpg
+    }).promise();
+
+    const imageKeys = listRes.Contents?.map(item => item.Key!).filter(Boolean) || [];
+
+    const imageUrls = await Promise.all(
+      imageKeys.map(key =>
+        s3.getSignedUrlPromise("getObject", { Bucket: s3Bucket, Key: key, Expires: 60 * 60 })
+      )
+    );
 
     // Threads API コンテナ作成
     const res = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
@@ -68,9 +67,9 @@ export async function GET() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        media_type: imageUrl ? "IMAGE" : "TEXT",
+        media_type: imageUrls.length > 0 ? "IMAGE" : "TEXT",
         text: message,
-        ...(imageUrl && { image_url: imageUrl }),
+        ...(imageUrls.length > 0 && { media_urls: imageUrls }), // 複数画像
       }),
     });
 
