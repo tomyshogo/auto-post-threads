@@ -9,13 +9,8 @@ export async function GET() {
   const s3Bucket = process.env.S3_BUCKET_NAME!;
   const s3Region = process.env.AWS_REGION!;
 
-  // Google サービスアカウントキーを作成
-  const serviceAccountKey = {
-    type: process.env.GOOGLE_TYPE,
-    project_id: process.env.GOOGLE_PROJECT_ID,
-    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n").trim(),
-    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-  };
+  // JSON文字列をパースしてサービスアカウントキーに変換
+  const serviceAccountKey = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY!);
 
   try {
     // Google Sheets API クライアント

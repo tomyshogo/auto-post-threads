@@ -8,6 +8,9 @@ export default function UploadPage() {
   const [uploadDate, setUploadDate] = useState<string>(""); // 初期は空文字に
   const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
 
+  const [posting, setPosting] = useState(false);
+  const [threadResult, setThreadResult] = useState<any>(null);
+
   // ✅ クライアント側でのみ日付を設定
   useEffect(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -47,6 +50,22 @@ export default function UploadPage() {
       setUploading(false);
     }
   };
+
+  const handlePostToThreads = async () => {
+    setPosting(true);
+    setThreadResult(null);
+  
+    try {
+      const res = await fetch(`/api/cron`);
+      const data = await res.json();
+      setThreadResult(data);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPosting(false);
+    }
+  };
+  
 
   return (
     <div className="font-sans p-8">
@@ -97,6 +116,12 @@ export default function UploadPage() {
       <p className="mt-4 text-gray-500 text-sm">
         ※ 投稿はcronで自動的に行われます。
       </p>
+      <button
+      onClick={handlePostToThreads}
+      className="px-4 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+    >
+      {posting ? "投稿中..." : "Threadsに本日分を投稿"}
+    </button>
     </div>
   );
 }
