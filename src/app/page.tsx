@@ -1,46 +1,102 @@
-"use client"; // ボタンで fetch するので client component にする
-import { useState } from "react";
+"use client";
 
-export default function Home() {
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+import { useState, useEffect } from "react";
 
-  const handlePost = async () => {
-    setLoading(true);
-    setResult(null);
-    try {
-      const res = await fetch("/api/cron");
-      const data = await res.json();
-      setResult(JSON.stringify(data));
-    } catch (err: unknown) {
-      if (err instanceof Error) {
-        setResult(err.message);
-      } else {
-        setResult(String(err));
-      }
+export default function UploadPage() {
+  const [uploading, setUploading] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadDate, setUploadDate] = useState<string>(""); // 初期は空文字に
+  const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
+
+  // ✅ クライアント側でのみ日付を設定
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    setUploadDate(today);
+  }, []);
+
+  // S3にアップロードする関数
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      alert("ファイルを選択してください");
+      return;
     }
-    finally {
-      setLoading(false);
+
+    setUploading(true);
+    setUploadedUrl(null);
+
+    try {
+      // 1. S3署名付きURLを取得
+      const res = await fetch(`/api/get-s3-url?filename=${uploadDate}.jpg`);
+      if (!res.ok) throw new Error("署名付きURLの取得に失敗しました");
+
+      const { url, key } = await res.json();
+
+      // 2. S3にPUTリクエスト
+      const putRes = await fetch(url, {
+        method: "PUT",
+        body: selectedFile,
+      });
+      if (!putRes.ok) throw new Error("S3へのアップロードに失敗しました");
+
+      // 3. 完了URLをセット
+      const fileUrl = `https://threadsforautopost.s3.ap-northeast-1.amazonaws.com/${key}`;
+      setUploadedUrl(fileUrl);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
     }
   };
 
   return (
     <div className="font-sans p-8">
-      <h1 className="text-2xl font-bold mb-4">Threads 投稿テスト</h1>
+      <h1 className="text-2xl font-bold mb-4">S3画像アップロード</h1>
 
-      <button
-        onClick={handlePost}
-        disabled={loading}
-        className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-      >
-        {loading ? "投稿中..." : "投稿する"}
-      </button>
+      {/* 日付入力 */}
+      <div className="mb-4">
+        <label className="mr-2">日付:</label>
+        <input
+          type="date"
+          value={uploadDate}
+          onChange={(e) => setUploadDate(e.target.value)}
+          className="border px-2 py-1 rounded"
+        />
+      </div>
 
-      {result && (
-        <pre className="mt-4 p-2 border rounded bg-gray-100 dark:bg-gray-800">
-          {result}
-        </pre>
+      {/* 画像選択 */}
+      <div className="mb-4">
+        <input
+          type="file"
+          accept="image/*"
+          onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+        />
+        <button
+          onClick={handleUpload}
+          disabled={uploading || !selectedFile || !uploadDate}
+          className="ml-2 px-4 py-1 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400"
+        >
+          {uploading ? "アップロード中..." : "アップロード"}
+        </button>
+      </div>
+
+      {/* アップロード結果 */}
+      {uploadedUrl && (
+        <div className="mt-4 p-2 border rounded bg-gray-100 dark:bg-gray-800">
+          <p>アップロード完了:</p>
+          <a
+            href={uploadedUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-600 underline break-all"
+          >
+            {uploadedUrl}
+          </a>
+        </div>
       )}
+
+      <p className="mt-4 text-gray-500 text-sm">
+        ※ 投稿はcronで自動的に行われます。
+      </p>
     </div>
   );
 }

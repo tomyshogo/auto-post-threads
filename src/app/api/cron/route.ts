@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
+import AWS from "aws-sdk";
 
 export async function GET() {
   const accessToken = process.env.THREADS_ACCESS_TOKEN!;
   const userId = process.env.THREADS_USER_ID!;
   const sheetId = process.env.GOOGLE_SHEET_ID!;
   const serviceAccountKey = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY!);
+  const s3Bucket = process.env.S3_BUCKET_NAME!;
+  const s3Region = process.env.S3_REGION!;
 
   try {
     // Google Sheets API クライアント
@@ -15,18 +18,41 @@ export async function GET() {
     });
     const sheets = google.sheets({ version: "v4", auth });
 
-    // スプレッドシートから取得
+    // 今日の日付（YYYY-MM-DD）
+    const today = new Date().toISOString().slice(0, 10);
+
+    // シート全取得（A列=日付、B列=テキスト）
     const sheetData = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: "Sheet1!A2:B2",
+      range: "Sheet1!A2:B",
     });
 
-    const row = sheetData.data.values?.[0];
-    if (!row || !row[0]) {
-      return NextResponse.json({ success: false, error: "データがありません" });
+    const rows = sheetData.data.values;
+    if (!rows || rows.length === 0) {
+      return NextResponse.json({ success: false, error: "シートにデータがありません" });
     }
 
-    const [message, imageUrl] = row;
+    // 今日の日付の行を検索
+    const todayRow = rows.find((row) => row[0] === today);
+    if (!todayRow || !todayRow[1]) {
+      return NextResponse.json({ success: false, error: "今日の日付のテキストが見つかりません" });
+    }
+
+    const message = todayRow[1];
+
+    // AWS S3 クライアント
+    const s3 = new AWS.S3({
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+      region: s3Region,
+    });
+
+    // 署名付き URL を生成（有効期限1時間）
+    const imageUrl = await s3.getSignedUrlPromise("getObject", {
+      Bucket: s3Bucket,
+      Key: `${today}.jpg`,
+      Expires: 60 * 60,
+    });
 
     // Threads API: コンテナ作成
     const res = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
@@ -62,6 +88,7 @@ export async function GET() {
 
     const publishData = await publishRes.json();
     return NextResponse.json({ success: true, container: data, published: publishData });
+
   } catch (error) {
     console.error("Error posting to Threads:", error);
     return NextResponse.json({ success: false, error: (error as Error).message });
