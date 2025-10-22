@@ -7,18 +7,14 @@ export async function GET() {
   const userId = process.env.THREADS_USER_ID!;
   const sheetId = process.env.GOOGLE_SHEET_ID!;
   const s3Bucket = process.env.S3_BUCKET_NAME!;
-  const s3Region = process.env.S3_REGION!;
+  const s3Region = process.env.AWS_REGION!;
 
-  // Google サービスアカウントキーを個別に取得
+  // Google サービスアカウントキーを作成
   const serviceAccountKey = {
     type: process.env.GOOGLE_TYPE,
     project_id: process.env.GOOGLE_PROJECT_ID,
-    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n").trim(),
     client_email: process.env.GOOGLE_CLIENT_EMAIL,
-    client_id: process.env.GOOGLE_CLIENT_ID,
-    auth_uri: process.env.GOOGLE_AUTH_URI,
-    token_uri: process.env.GOOGLE_TOKEN_URI,
-    client_x509_cert_url: process.env.GOOGLE_CLIENT_X509_CERT_URL,
   };
 
   try {
@@ -29,10 +25,10 @@ export async function GET() {
     });
     const sheets = google.sheets({ version: "v4", auth });
 
-    // 今日の日付（YYYY-MM-DD）
+    // 今日の日付
     const today = new Date().toISOString().slice(0, 10);
 
-    // シート全取得（A列=日付、B列=テキスト）
+    // シートから全データ取得
     const sheetData = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range: "Sheet1!A2:B",
@@ -48,7 +44,6 @@ export async function GET() {
     if (!todayRow || !todayRow[1]) {
       return NextResponse.json({ success: false, error: "今日の日付のテキストが見つかりません" });
     }
-
     const message = todayRow[1];
 
     // AWS S3 クライアント
@@ -58,14 +53,19 @@ export async function GET() {
       region: s3Region,
     });
 
-    // 署名付き URL を生成（有効期限1時間）
-    const imageUrl = await s3.getSignedUrlPromise("getObject", {
-      Bucket: s3Bucket,
-      Key: `${today}.jpg`,
-      Expires: 60 * 60,
-    });
+    // 署名付き URL 取得
+    let imageUrl: string | null = null;
+    try {
+      imageUrl = await s3.getSignedUrlPromise("getObject", {
+        Bucket: s3Bucket,
+        Key: `${today}.jpg`,
+        Expires: 60 * 60,
+      });
+    } catch (err) {
+      console.warn("S3画像が見つかりません:", err);
+    }
 
-    // Threads API: コンテナ作成
+    // Threads API コンテナ作成
     const res = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
       method: "POST",
       headers: {
@@ -80,14 +80,13 @@ export async function GET() {
     });
 
     const rawText = await res.text();
-    console.log("Raw Threads API response:", rawText);
     const data = JSON.parse(rawText);
 
     if (!data.id) {
       return NextResponse.json({ success: false, error: "コンテナIDが取得できません", data });
     }
 
-    // Threads API: 公開
+    // Threads API 公開
     const publishRes = await fetch(`https://graph.threads.net/v1.0/${userId}/threads_publish`, {
       method: "POST",
       headers: {
