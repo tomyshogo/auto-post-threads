@@ -2,16 +2,24 @@
 
 import { useState, useEffect } from "react";
 
+// Threads API レスポンス型
+interface ThreadsResponse {
+  success?: boolean;
+  container?: { id?: string; [key: string]: unknown };
+  published?: { [key: string]: unknown };
+  error?: string;
+}
+
 export default function UploadPage() {
   const [uploading, setUploading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [uploadDate, setUploadDate] = useState<string>(""); // 初期は空文字に
+  const [uploadDate, setUploadDate] = useState<string>(""); // 初期は空文字
   const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
 
   const [posting, setPosting] = useState(false);
-  const [threadResult, setThreadResult] = useState<any>(null);
+  const [threadResult, setThreadResult] = useState<ThreadsResponse | null>(null);
 
-  // ✅ クライアント側でのみ日付を設定
+  // クライアント側でのみ日付を設定
   useEffect(() => {
     const today = new Date().toISOString().slice(0, 10);
     setUploadDate(today);
@@ -51,13 +59,14 @@ export default function UploadPage() {
     }
   };
 
+  // Threadsに投稿する関数
   const handlePostToThreads = async () => {
     setPosting(true);
     setThreadResult(null);
-  
+
     try {
       const res = await fetch(`/api/cron`);
-      const data = await res.json();
+      const data: ThreadsResponse = await res.json();
       setThreadResult(data);
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : String(err));
@@ -65,7 +74,6 @@ export default function UploadPage() {
       setPosting(false);
     }
   };
-  
 
   return (
     <div className="font-sans p-8">
@@ -116,12 +124,21 @@ export default function UploadPage() {
       <p className="mt-4 text-gray-500 text-sm">
         ※ 投稿はcronで自動的に行われます。
       </p>
+
       <button
-      onClick={handlePostToThreads}
-      className="px-4 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
-    >
-      {posting ? "投稿中..." : "Threadsに本日分を投稿"}
-    </button>
+        onClick={handlePostToThreads}
+        className="px-4 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+      >
+        {posting ? "投稿中..." : "Threadsに本日分を投稿"}
+      </button>
+
+      {/* Threads API レスポンス表示 */}
+      {threadResult && (
+        <div className="mt-4 p-2 border rounded bg-gray-100 dark:bg-gray-800">
+          <h2 className="font-semibold mb-2">投稿結果:</h2>
+          <pre className="text-sm">{JSON.stringify(threadResult, null, 2)}</pre>
+        </div>
+      )}
     </div>
   );
 }
