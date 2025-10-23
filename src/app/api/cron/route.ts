@@ -54,20 +54,19 @@ export async function GET() {
     if (imageKeys.length === 0)
       return NextResponse.json({ success: false, error: "S3に画像がありません" });
 
-    // --- 署名付きURL生成（有効期限6時間に延長） ---
+    // --- 署名付きURL生成（有効期限6時間） ---
     const imageUrls = await Promise.all(
       imageKeys.map((key) =>
         s3.getSignedUrlPromise("getObject", {
           Bucket: s3Bucket,
           Key: key,
-          Expires: 60 * 60 * 6, // 6時間
+          Expires: 60 * 60 * 6,
         })
       )
     );
 
     let creationId = "";
 
-    // --- Threads 投稿 ---
     if (imageUrls.length === 1) {
       // 単一画像投稿
       const containerRes = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
@@ -89,29 +88,31 @@ export async function GET() {
 
       creationId = containerData.id;
     } else {
-      // --- カルーセル投稿（並列処理で作成） ---
-      const childDataArray = await Promise.all(
-        imageUrls.map((url) =>
-          fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              media_type: "IMAGE",
-              image_url: url,
-              is_carousel_item: true,
-            }),
-          }).then((res) => res.json())
-        )
-      );
-
+      // --- カルーセル投稿（逐次処理 + 待機） ---
       const childIds: string[] = [];
-      for (const childData of childDataArray) {
+
+      for (const url of imageUrls) {
+        const childRes = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            media_type: "IMAGE",
+            image_url: url,
+            is_carousel_item: true,
+          }),
+        });
+        const childData = await childRes.json();
+
         if (!childData.id)
           return NextResponse.json({ success: false, error: "カルーセル画像作成失敗", data: childData });
+
         childIds.push(childData.id);
+
+        // 少し待機してAPIがIDを認識できるようにする
+        await new Promise((resolve) => setTimeout(resolve, 500)); // 0.5秒
       }
 
       const carouselRes = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
