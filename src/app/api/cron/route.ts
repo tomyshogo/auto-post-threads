@@ -21,7 +21,7 @@ export async function GET() {
     const now = new Date();
     const jstOffset = 9 * 60; // JST (+9時間)
     const jstDate = new Date(now.getTime() + jstOffset * 60 * 1000);
-    const today = jstDate.toISOString().slice(0, 10); // 例: 2025-10-23
+    const today = jstDate.toISOString().slice(0, 10);
 
     const sheetData = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
@@ -47,20 +47,20 @@ export async function GET() {
 
     const listRes = await s3.listObjectsV2({
       Bucket: s3Bucket,
-      Prefix: `${today}_`, // 例: 2025-10-23_abc.jpg
+      Prefix: `${today}_`,
     }).promise();
 
     const imageKeys = listRes.Contents?.map((item) => item.Key!).filter(Boolean) || [];
     if (imageKeys.length === 0)
       return NextResponse.json({ success: false, error: "S3に画像がありません" });
 
-    // 署名付きURL生成
+    // --- 署名付きURL生成（有効期限6時間に延長） ---
     const imageUrls = await Promise.all(
       imageKeys.map((key) =>
         s3.getSignedUrlPromise("getObject", {
           Bucket: s3Bucket,
           Key: key,
-          Expires: 60 * 60,
+          Expires: 60 * 60 * 6, // 6時間
         })
       )
     );
@@ -89,31 +89,31 @@ export async function GET() {
 
       creationId = containerData.id;
     } else {
-      // カルーセル投稿
+      // --- カルーセル投稿（並列処理で作成） ---
+      const childDataArray = await Promise.all(
+        imageUrls.map((url) =>
+          fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              media_type: "IMAGE",
+              image_url: url,
+              is_carousel_item: true,
+            }),
+          }).then((res) => res.json())
+        )
+      );
+
       const childIds: string[] = [];
-
-      for (const url of imageUrls) {
-        const childRes = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            media_type: "IMAGE",
-            image_url: url,
-            is_carousel_item: true,
-          }),
-        });
-        const childData = await childRes.json();
-
+      for (const childData of childDataArray) {
         if (!childData.id)
           return NextResponse.json({ success: false, error: "カルーセル画像作成失敗", data: childData });
-
         childIds.push(childData.id);
       }
 
-      // カルーセルコンテナ作成
       const carouselRes = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
         method: "POST",
         headers: {
