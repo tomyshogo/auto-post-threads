@@ -8,11 +8,10 @@ export async function GET() {
   const sheetId = process.env.GOOGLE_SHEET_ID!;
   const s3Bucket = process.env.S3_BUCKET_NAME!;
   const s3Region = process.env.AWS_REGION!;
-
   const serviceAccountKey = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY!);
 
   try {
-    // Google Sheets API クライアント
+    // --- Google Sheets 読み取り ---
     const auth = new google.auth.GoogleAuth({
       credentials: serviceAccountKey,
       scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
@@ -20,84 +19,139 @@ export async function GET() {
     const sheets = google.sheets({ version: "v4", auth });
 
     const now = new Date();
-    const jstToday = new Date(now.getTime() + 9 * 60 * 60 * 1000); // JST
-    const today = jstToday.toISOString().slice(0, 10);
+    const jstOffset = 9 * 60; // JST (+9時間)
+    const jstDate = new Date(now.getTime() + jstOffset * 60 * 1000);
+    const today = jstDate.toISOString().slice(0, 10); // 例: 2025-10-23
 
-
-    // シートから全データ取得
     const sheetData = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range: "Sheet1!A2:B",
     });
 
     const rows = sheetData.data.values;
-    if (!rows || rows.length === 0) {
+    if (!rows || rows.length === 0)
       return NextResponse.json({ success: false, error: "シートにデータがありません" });
-    }
 
     const todayRow = rows.find((row) => row[0] === today);
-    if (!todayRow || !todayRow[1]) {
+    if (!todayRow || !todayRow[1])
       return NextResponse.json({ success: false, error: "今日の日付のテキストが見つかりません" });
-    }
+
     const message = todayRow[1];
 
-    // AWS S3 クライアント
+    // --- S3の画像取得 ---
     const s3 = new AWS.S3({
       accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
       region: s3Region,
     });
 
-    // 今日の日付に対応する画像をすべて取得
     const listRes = await s3.listObjectsV2({
       Bucket: s3Bucket,
-      Prefix: `${today}_`, // 例: 2025-10-22_1.jpg, 2025-10-22_2.jpg
+      Prefix: `${today}_`, // 例: 2025-10-23_abc.jpg
     }).promise();
 
-    const imageKeys = listRes.Contents?.map(item => item.Key!).filter(Boolean) || [];
+    const imageKeys = listRes.Contents?.map((item) => item.Key!).filter(Boolean) || [];
+    if (imageKeys.length === 0)
+      return NextResponse.json({ success: false, error: "S3に画像がありません" });
 
+    // 署名付きURL生成
     const imageUrls = await Promise.all(
-      imageKeys.map(key =>
-        s3.getSignedUrlPromise("getObject", { Bucket: s3Bucket, Key: key, Expires: 60 * 60 })
+      imageKeys.map((key) =>
+        s3.getSignedUrlPromise("getObject", {
+          Bucket: s3Bucket,
+          Key: key,
+          Expires: 60 * 60,
+        })
       )
     );
 
-    // Threads API コンテナ作成
-    const res = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        media_type: imageUrls.length > 0 ? "IMAGE" : "TEXT",
-        text: message,
-        ...(imageUrls.length > 0 && { media_urls: imageUrls }), // 複数画像
-      }),
-    });
+    let creationId = "";
 
-    const rawText = await res.text();
-    const data = JSON.parse(rawText);
+    // --- Threads 投稿 ---
+    if (imageUrls.length === 1) {
+      // 単一画像投稿
+      const containerRes = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          media_type: "IMAGE",
+          image_url: imageUrls[0],
+          text: message,
+        }),
+      });
+      const containerData = await containerRes.json();
 
-    if (!data.id) {
-      return NextResponse.json({ success: false, error: "コンテナIDが取得できません", data });
+      if (!containerData.id)
+        return NextResponse.json({ success: false, error: "画像コンテナ作成失敗", data: containerData });
+
+      creationId = containerData.id;
+    } else {
+      // カルーセル投稿
+      const childIds: string[] = [];
+
+      for (const url of imageUrls) {
+        const childRes = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            media_type: "IMAGE",
+            image_url: url,
+            is_carousel_item: true,
+          }),
+        });
+        const childData = await childRes.json();
+
+        if (!childData.id)
+          return NextResponse.json({ success: false, error: "カルーセル画像作成失敗", data: childData });
+
+        childIds.push(childData.id);
+      }
+
+      // カルーセルコンテナ作成
+      const carouselRes = await fetch(`https://graph.threads.net/v1.0/${userId}/threads`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          media_type: "CAROUSEL",
+          children: childIds,
+          text: message,
+        }),
+      });
+      const carouselData = await carouselRes.json();
+
+      if (!carouselData.id)
+        return NextResponse.json({ success: false, error: "カルーセル作成失敗", data: carouselData });
+
+      creationId = carouselData.id;
     }
 
-    // Threads API 公開
+    // --- 公開 ---
     const publishRes = await fetch(`https://graph.threads.net/v1.0/${userId}/threads_publish`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ creation_id: data.id }),
+      body: JSON.stringify({ creation_id: creationId }),
     });
-
     const publishData = await publishRes.json();
-    return NextResponse.json({ success: true, container: data, published: publishData });
+
+    return NextResponse.json({ success: true, published: publishData });
 
   } catch (error) {
     console.error("Error posting to Threads:", error);
-    return NextResponse.json({ success: false, error: (error as Error).message });
+    return NextResponse.json({
+      success: false,
+      error: (error as Error).message,
+    });
   }
 }
